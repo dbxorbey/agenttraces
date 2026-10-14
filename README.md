@@ -93,15 +93,20 @@ It uses the `POST /api/2.0/genie/spaces` REST API and includes:
   and metrics (`resolve rate`, `avg errors per trajectory`)
 - **Join specs** linking `classified_errors` to `trajectory_summary` on `trace_id`
 
-**From a Databricks notebook:**
+**From a Databricks notebook** in the same folder (the file name starts with a digit, so
+load it with `importlib` rather than `import` or `%run`):
 
 ```python
-%run ./05_create_genie_error_agent
+import importlib.util
+spec = importlib.util.spec_from_file_location("genie_agent", "./05_create_genie_error_agent.py")
+genie_agent = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(genie_agent)
 
-result = create_genie_space(
+result = genie_agent.create_genie_space(
     catalog="your_catalog",
     schema="your_schema",
     # parent_path defaults to /Workspace/Users/<you>/AgentTraces
+    # warehouse_id defaults to the first serverless SQL warehouse
 )
 print(f"Space URL: /genie/rooms/{result['space_id']}")
 ```
@@ -112,11 +117,15 @@ print(f"Space URL: /genie/rooms/{result['space_id']}")
 python 05_create_genie_error_agent.py \
     --catalog your_catalog \
     --schema your_schema \
-    --parent-path /Workspace/Users/you@example.com/AgentTraces   # optional
+    --warehouse-id your_warehouse_id \
+    --parent-path /Workspace/Users/you@example.com/AgentTraces
 ```
 
-The defaults point to `main.nvidia_open_swe_traces`, and the space is created in
-`/Workspace/Users/<you>/AgentTraces`.
+`--warehouse-id` and `--parent-path` are optional.
+
+The defaults point to `main.nvidia_open_swe_traces`, the space is created in
+`/Workspace/Users/<you>/AgentTraces`, and it uses the first serverless SQL warehouse
+(preferring a running one) unless you pass a warehouse ID.
 Edit the `DEFAULT_*` constants at the top of the script to change them permanently.
 The Genie space can also be created interactively from the Databricks UI — the script
 simply automates the same configuration.

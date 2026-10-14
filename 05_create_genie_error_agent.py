@@ -4,8 +4,13 @@ This script programmatically creates a Genie space configured to surface
 the most frequent errors in agent trajectories and recommend what to fix next.
 
 Usage:
-    # From a Databricks notebook (uses ambient auth):
-    %run ./05_create_genie_error_agent
+    # From a Databricks notebook in the same folder (uses ambient auth).
+    # The file name starts with a digit, so load it via importlib:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("genie_agent", "./05_create_genie_error_agent.py")
+    genie_agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(genie_agent)
+    genie_agent.create_genie_space(catalog="my_catalog", schema="my_schema")
 
     # Or run directly with Python:
     python 05_create_genie_error_agent.py
@@ -14,6 +19,7 @@ Usage:
     python 05_create_genie_error_agent.py \\
         --catalog my_catalog \\
         --schema my_schema \\
+        --warehouse-id abc123def456 \\
         --parent-path /Workspace/Users/me@example.com
 """
 
@@ -21,6 +27,7 @@ import argparse
 import json
 import sys
 import uuid
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these defaults or override via CLI args
@@ -38,8 +45,8 @@ SPACE_DESCRIPTION = (
 
 
 def _id() -> str:
-    """Generate a 16-hex-char ID matching the Genie serialized_space format."""
-    return uuid.uuid4().hex[:16]
+    """Generate a 32-hex-char ID matching the Genie serialized_space format."""
+    return uuid.uuid4().hex
 
 
 def build_serialized_space(catalog: str, schema: str) -> str:
@@ -57,8 +64,8 @@ def build_serialized_space(catalog: str, schema: str) -> str:
                 "str_replace_editor), error_type, error_message, analysis_timestamp."
             ],
             "column_configs": [
-                {"column_name": "error_type", "get_example_values": True, "build_value_dictionary": True},
-                {"column_name": "tool", "get_example_values": True, "build_value_dictionary": True},
+                {"column_name": "error_type", "enable_format_assistance": True, "enable_entity_matching": True},
+                {"column_name": "tool", "enable_format_assistance": True, "enable_entity_matching": True},
             ],
         },
         {
@@ -71,10 +78,10 @@ def build_serialized_space(catalog: str, schema: str) -> str:
                 "Exclude resolved = -1 (ungraded) from resolve-rate calculations."
             ],
             "column_configs": [
-                {"column_name": "framework", "get_example_values": True, "build_value_dictionary": True},
-                {"column_name": "model", "get_example_values": True, "build_value_dictionary": True},
-                {"column_name": "outcome", "get_example_values": True, "build_value_dictionary": True},
-                {"column_name": "language", "get_example_values": True, "build_value_dictionary": True},
+                {"column_name": "framework", "enable_format_assistance": True, "enable_entity_matching": True},
+                {"column_name": "model", "enable_format_assistance": True, "enable_entity_matching": True},
+                {"column_name": "outcome", "enable_format_assistance": True, "enable_entity_matching": True},
+                {"column_name": "language", "enable_format_assistance": True, "enable_entity_matching": True},
             ],
         },
         {
@@ -84,7 +91,7 @@ def build_serialized_space(catalog: str, schema: str) -> str:
                 "affected_trajectories, pct_of_errors. Use for quick top-level overviews."
             ],
             "column_configs": [
-                {"column_name": "error_type", "get_example_values": True, "build_value_dictionary": True},
+                {"column_name": "error_type", "enable_format_assistance": True, "enable_entity_matching": True},
             ],
         },
     ]
@@ -97,12 +104,7 @@ def build_serialized_space(catalog: str, schema: str) -> str:
                 "You are an error-analysis assistant for the NVIDIA Open-SWE-Traces "
                 "dataset. Your goal is to help users identify the most frequent errors "
                 "across AI coding agent trajectories and recommend which errors to "
-                "prioritize fixing for the highest impact on resolve rates."
-            ],
-        },
-        {
-            "id": _id(),
-            "content": [
+                "prioritize fixing for the highest impact on resolve rates.",
                 "Key domain rules:\n"
                 "- Each trajectory is one agent attempt to solve a SWE-bench issue (trace_id).\n"
                 "- resolved = 1 means resolved, 0 = failed, -1 = ungraded.\n"
@@ -201,14 +203,14 @@ def build_serialized_space(catalog: str, schema: str) -> str:
         "filters": [
             {
                 "id": _id(),
-                "sql": ["resolved != -1"],
+                "sql": ["trajectory_summary.resolved != -1"],
                 "display_name": "exclude ungraded",
                 "synonyms": ["graded only", "skip ungraded"],
             },
             {
                 "id": _id(),
                 "sql": [
-                    "error_type NOT IN ('other non-zero exit', "
+                    "classified_errors.error_type NOT IN ('other non-zero exit', "
                     "'silent non-zero exit (e.g. grep no match)')"
                 ],
                 "display_name": "actionable errors only",
@@ -219,14 +221,14 @@ def build_serialized_space(catalog: str, schema: str) -> str:
             {
                 "id": _id(),
                 "alias": "resolve_rate",
-                "sql": ["ROUND(AVG(CASE WHEN resolved = 1 THEN 1.0 ELSE 0.0 END) * 100, 1)"],
+                "sql": ["ROUND(AVG(CASE WHEN trajectory_summary.resolved = 1 THEN 1.0 ELSE 0.0 END) * 100, 1)"],
                 "display_name": "resolve rate (%)",
                 "synonyms": ["success rate", "resolution rate"],
             },
             {
                 "id": _id(),
                 "alias": "avg_errors",
-                "sql": ["ROUND(AVG(total_errors), 2)"],
+                "sql": ["ROUND(AVG(trajectory_summary.total_errors), 2)"],
                 "display_name": "average errors per trajectory",
                 "synonyms": ["error rate", "errors per run"],
             },
@@ -239,13 +241,25 @@ def build_serialized_space(catalog: str, schema: str) -> str:
             "id": _id(),
             "left": {"identifier": fq("classified_errors"), "alias": "ce"},
             "right": {"identifier": fq("trajectory_summary"), "alias": "ts"},
-            "sql": ["ce.trace_id = ts.trace_id"],
+            "sql": ["`ce`.`trace_id` = `ts`.`trace_id`", "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],
         },
     ]
 
     # -- Assemble the full serialized_space object ----------------------------
+    # The API requires every list to be sorted: tables by identifier,
+    # column_configs by column_name, everything else by id.
+    by_id = lambda items: sorted(items, key=lambda x: x["id"])  # noqa: E731
+    for t in tables:
+        t["column_configs"] = sorted(t["column_configs"], key=lambda c: c["column_name"])
+    tables = sorted(tables, key=lambda t: t["identifier"])
+    sample_questions = by_id(sample_questions)
+    text_instructions = by_id(text_instructions)
+    example_question_sqls = by_id(example_question_sqls)
+    join_specs = by_id(join_specs)
+    sql_snippets = {k: by_id(v) for k, v in sql_snippets.items()}
+
     space = {
-        "version": 1,
+        "version": 2,
         "config": {
             "sample_questions": sample_questions,
         },
@@ -263,10 +277,23 @@ def build_serialized_space(catalog: str, schema: str) -> str:
     return json.dumps(space)
 
 
+def _pick_warehouse(w) -> str:
+    """Pick a SQL warehouse for the Genie space: serverless first, running first."""
+    warehouses = list(w.warehouses.list())
+    if not warehouses:
+        raise RuntimeError("No SQL warehouse found - pass --warehouse-id explicitly")
+    warehouses.sort(key=lambda wh: (
+        not wh.enable_serverless_compute,
+        getattr(wh.state, "value", wh.state) != "RUNNING",
+    ))
+    return warehouses[0].id
+
+
 def create_genie_space(
     catalog: str,
     schema: str,
-    parent_path: str | None = DEFAULT_PARENT_PATH,
+    parent_path: Optional[str] = DEFAULT_PARENT_PATH,
+    warehouse_id: Optional[str] = None,
     title: str = SPACE_TITLE,
     description: str = SPACE_DESCRIPTION,
 ) -> dict:
@@ -276,11 +303,14 @@ def create_genie_space(
     w = WorkspaceClient()
     if parent_path is None:
         parent_path = f"/Workspace/Users/{w.current_user.me().user_name}/AgentTraces"
+    if warehouse_id is None:
+        warehouse_id = _pick_warehouse(w)
 
     payload = {
         "title": title,
         "description": description,
         "parent_path": parent_path,
+        "warehouse_id": warehouse_id,
         "serialized_space": build_serialized_space(catalog, schema),
     }
 
@@ -300,6 +330,7 @@ def main():
     parser.add_argument("--catalog", default=DEFAULT_CATALOG, help="Unity Catalog catalog name")
     parser.add_argument("--schema", default=DEFAULT_SCHEMA, help="Schema containing the trace tables")
     parser.add_argument("--parent-path", default=DEFAULT_PARENT_PATH, help="Workspace path for the space (default: /Workspace/Users/<you>/AgentTraces)")
+    parser.add_argument("--warehouse-id", default=None, help="SQL warehouse for the space (default: first serverless warehouse)")
     args = parser.parse_args()
 
     print(f"Creating Genie space '{SPACE_TITLE}'...")
@@ -311,6 +342,7 @@ def main():
         catalog=args.catalog,
         schema=args.schema,
         parent_path=args.parent_path,
+        warehouse_id=args.warehouse_id,
     )
 
     space_id = result.get("space_id", "unknown")

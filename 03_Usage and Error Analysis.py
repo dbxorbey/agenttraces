@@ -335,11 +335,13 @@
 # MAGIC   GROUP BY trace_id
 # MAGIC )
 # MAGIC SELECT t.trace_id, t.framework, t.model,
-# MAGIC        COALESCE(t.resolved, -1) AS resolved, t.outcome,
+# MAGIC        COALESCE(t.resolved, -1) AS resolved, t.outcome, t.ungraded,
 # MAGIC        t.repo, t.language, t.instance_id, t.category, t.source_dataset,
 # MAGIC        t.num_tool_calls, t.num_llm_calls, t.input_tokens, t.output_tokens,
 # MAGIC        t.patch_files, t.patch_lines, t.ref_patch_lines,
 # MAGIC        COALESCE(e.total_errors, 0)             AS total_errors,
+# MAGIC        COALESCE(e.errors_missing_toolchain + e.errors_missing_dep, 0) AS env_errors,
+# MAGIC        COALESCE(e.errors_wrong_path + e.errors_protocol_misuse + e.errors_syntax + e.errors_go_test, 0) AS agent_errors,
 # MAGIC        COALESCE(e.errors_edit_mismatch, 0)     AS errors_edit_mismatch,
 # MAGIC        COALESCE(e.errors_timeout, 0)           AS errors_timeout,
 # MAGIC        COALESCE(e.errors_missing_dep, 0)       AS errors_missing_dep,
@@ -350,12 +352,14 @@
 # MAGIC        COALESCE(e.errors_syntax, 0)            AS errors_syntax,
 # MAGIC        COALESCE(e.errors_test_failure, 0)      AS errors_test_failure,
 # MAGIC        COALESCE(e.errors_silent_exit, 0)       AS errors_silent_exit,
-# MAGIC        COALESCE(e.errors_other, 0)             AS errors_other
+# MAGIC        COALESCE(e.errors_other, 0)             AS errors_other,
+# MAGIC        current_timestamp()                     AS analysis_timestamp
 # MAGIC FROM trajectories t LEFT JOIN e USING (trace_id);
 # MAGIC
 # MAGIC CREATE OR REPLACE TABLE IDENTIFIER(:output_schema || '.error_taxonomy_summary')
 # MAGIC COMMENT 'Pre-aggregated error distribution by error_type.'
 # MAGIC AS SELECT error_type, COUNT(*) AS errors, COUNT(DISTINCT trace_id) AS affected_trajectories,
-# MAGIC        ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct_of_errors
+# MAGIC        ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct_of_errors,
+# MAGIC        current_timestamp() AS analysis_timestamp
 # MAGIC FROM classified_errors
 # MAGIC GROUP BY error_type;
